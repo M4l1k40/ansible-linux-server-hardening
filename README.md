@@ -77,9 +77,4 @@ All variables can be overridden with `-e` on the `ansible-playbook` command line
 - Add tests or sample inventories under `inventory/`.
 - Keep role tasks idempotent and safe for `--check` where possible.
 
-## Licensing & Security
-
-- Do not commit secrets (SSH keys, passwords, vault files). Add them to `.gitignore` if necessary.
-- Consider making the GitHub repository private if configuration is sensitive.
-
 ---
