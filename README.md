@@ -74,7 +74,6 @@ All variables can be overridden with `-e` on the `ansible-playbook` command line
 
 ## Contributing
 
-- Add tests or sample inventories under `inventory/`.
-- Keep role tasks idempotent and safe for `--check` where possible.
-
+- Add tests or sample inventories under `inventory/`
 ---
+
