@@ -1,0 +1,207 @@
+---
+# ============================================================================
+# Playbook de Durcissement CIS Ubuntu/Debian
+# ============================================================================
+# Ce playbook applique les recommandations de durcissement CIS (Center for 
+# Internet Security) via le rôle hardening consolidé.
+#
+# Compatible avec:
+# - Serveurs physiques (Linux - Debian/Ubuntu)
+# - Machines virtuelles (KVM, VMware, Hyper-V, etc.)
+# - Conteneurs Docker (avec conditions adaptées)
+#
+# Usage:
+#   ansible-playbook playbooks/cis_hardening.yml -i inventory/hosts
+#   ansible-playbook playbooks/cis_hardening.yml -i inventory/hosts -t hardening,ssh
+#   ansible-playbook playbooks/cis_hardening.yml -i inventory/hosts --check
+#   ansible-playbook playbooks/cis_hardening.yml -i inventory/hosts -e "skip_firewall=true"
+# ============================================================================
+
+- name: CIS Ubuntu/Debian Hardening - Application des règles de sécurité
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # Variables de configuration du durcissement
+    skip_firewall: false              # Passer le firewall si true
+    skip_aide: false                  # Passer AIDE (FIM) si true (peut être lourd)
+    skip_sudo_hardening: false        # Passer sudo hardening si true
+    enable_verbose_logging: true      # Messages détaillés pendant l'exécution
+    # Exécuter un audit avant et/ou après le durcissement
+    run_pre_audit: true               # lancer l'audit avant l'application des règles
+    run_audit_after_hardening: false  # lancer l'audit après l'application des règles
+    audit_reports_local_dir: "{{ playbook_dir }}/reports"
+
+  pre_tasks:
+    - name: "🔍 Vérification préalable - Ansible version"
+      debug:
+        msg: "Ansible version: {{ ansible_version.full }}"
+      run_once: yes
+      tags:
+        - always
+        - hardening
+
+    - name: "📋 Informations du système cible"
+      debug:
+        msg: |
+          Hôte: {{ inventory_hostname }}
+          OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+          Kernel: {{ ansible_facts['kernel_version'] }}
+          Type de virtualisation: {{ ansible_facts.get('virtualization_type', 'bare-metal') }}
+          Architecture: {{ ansible_facts['architecture'] }}
+      when: enable_verbose_logging | bool
+      tags:
+        - always
+        - hardening
+
+    - name: "⚠️  Avertissement - Mode check"
+      debug:
+        msg: |
+          ⚠️  ATTENTION: Le playbook s'exécute en MODE CHECK (lecture seule)
+          Les modifications NE seront PAS appliquées
+          Utilisez: ansible-playbook ... (sans --check) pour appliquer les changements
+      when: ansible_check_mode
+      tags:
+        - always
+        - hardening
+
+    - name: "🐳 Avertissement - Environnement Docker détecté"
+      debug:
+        msg: |
+          ℹ️  Docker détecté: {{ ansible_facts.get('virtualization_type') }}
+          Les tâches liées au bootloader et services seront ignorées
+          Seules les configurations adaptées à Docker seront appliquées
+      when: ansible_facts.get('virtualization_type', '') == 'docker'
+      tags:
+        - always
+        - hardening
+
+    - name: "🧾 Exécuter l'audit préliminaire (vérification baseline)"
+      include_role:
+        name: audit
+      when: run_pre_audit | bool
+      tags:
+        - audit
+        - pre-audit
+
+  roles:
+    # Rôle hardening - Application des règles CIS de durcissement
+    - name: hardening
+      tags:
+        - hardening
+        - cis
+
+  post_tasks:
+    - name: "✅ Résumé du durcissement appliqué"
+      debug:
+        msg: |
+          ════════════════════════════════════════════════════════════
+          ✓ Durcissement CIS complété pour {{ inventory_hostname }}
+          
+          Sections appliquées:
+          ✓ 1.x - Configuration du système (modules, partitions, apparmor)
+          ✓ 2.x - Services et SSH
+          ✓ 3.x - Système de fichiers
+          ✓ 4.x - Journalisation (rsyslog, auditd)
+          ✓ 5.x - Permissions et limite de session
+          ✓ 6.x - Comptes système
+          ✓ 7.x - Firewall (UFW, iptables)
+          ✓ 8.x - Sudo et Audit avancé
+          ✓ 9.x - Intégrité des fichiers (AIDE)
+          ✓ 10.x - Synchronisation horaire (Chrony)
+          ✓ 11.x - Modules filesystem sécurisés
+          
+          ⚠️  Note: Les services seront redémarrés si nécessaire
+          ⚠️  En Docker, seules les configurations compatibles ont été appliquées
+          
+          ════════════════════════════════════════════════════════════
+      tags:
+        - hardening
+        - summary
+
+    - name: "🔐 Vérifications rapides après durcissement"
+      debug:
+        msg: |
+          Vérifications post-durcissement pour {{ inventory_hostname }}:
+          
+          Pour valider manuellement:
+          
+          SSH:
+            sudo grep "PermitRootLogin" /etc/ssh/sshd_config
+            sudo grep "PasswordAuthentication" /etc/ssh/sshd_config
+          
+          Firewall (non-Docker):
+            sudo ufw status
+            sudo iptables -L -n
+          
+          Sudo:
+            sudo visudo -c
+          
+          Auditd (non-Docker):
+            sudo systemctl status auditd
+            sudo auditctl -l
+          
+          AppArmor:
+            sudo aa-status
+      tags:
+        - hardening
+        - summary
+        - verification
+
+    - name: "🧾 Optionnel: Exécuter l'audit après durcissement (génération et collecte des rapports)"
+      include_role:
+        name: audit
+      when: run_audit_after_hardening | bool
+      tags:
+        - audit
+        - report
+
+    - name: "📁 Lister les rapports collectés (machine de contrôle)"
+      ansible.builtin.find:
+        path: "{{ audit_reports_local_dir }}/{{ inventory_hostname }}"
+        file_type: file
+      delegate_to: localhost
+      register: collected_reports
+      when: run_audit_after_hardening | bool
+      tags:
+        - report
+
+    - name: "📝 Afficher les rapports collectés"
+      ansible.builtin.debug:
+        msg: |
+          Rapports collectés pour {{ inventory_hostname }}:
+          {% for f in collected_reports.files %}
+          - {{ f.path }} ({{ f.size }} bytes)
+          {% endfor %}
+      delegate_to: localhost
+      when: run_audit_after_hardening | bool
+      tags:
+        - report
+
+  handlers:
+    - name: Restart SSH
+      ansible.builtin.service:
+        name: sshd
+        state: restarted
+      when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+      ignore_errors: yes
+      listen: "Restart SSH"
+
+    - name: Restart UFW
+      ansible.builtin.service:
+        name: ufw
+        state: restarted
+      when: 
+        - ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+        - not skip_firewall | bool
+      ignore_errors: yes
+      listen: "Restart UFW"
+
+    - name: Restart auditd
+      ansible.builtin.service:
+        name: auditd
+        state: restarted
+      when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+      ignore_errors: yes
+      listen: "Restart auditd"

@@ -1,0 +1,99 @@
+---
+# ============================================================================
+# Playbook d'Audit de Conformité CIS
+# ============================================================================
+# Ce playbook exécute le rôle audit pour vérifier la conformité CIS,
+# générer des rapports et les collecter sur la machine de contrôle.
+# ============================================================================
+
+- name: Audit de Conformité CIS - Vérification et Rapports
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # Répertoire local sur la machine de contrôle pour les rapports
+    audit_reports_local_dir: "{{ playbook_dir }}/reports"
+    # Variable pour le rôle audit (voir roles/audit/vars/main.yml)
+    audit_report_json: /tmp/audit_report.json
+    audit_report_html: /tmp/audit_report.html
+
+  pre_tasks:
+    - name: "🔍 Vérification - Ansible version"
+      debug:
+        msg: "Ansible version: {{ ansible_version.full }}"
+      run_once: yes
+      tags:
+        - always
+        - audit
+
+    - name: "📋 Informations système"
+      debug:
+        msg: |
+          Hôte: {{ inventory_hostname }}
+          OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+          Kernel: {{ ansible_facts['kernel_version'] }}
+          Type de virtualisation: {{ ansible_facts.get('virtualization_type', 'unknown') }}
+      tags:
+        - always
+        - audit
+
+  roles:
+    # Rôle audit - Vérifications de conformité CIS et génération de rapports
+    - name: audit
+      tags:
+        - audit
+        - cis
+        - compliance
+
+  post_tasks:
+    - name: "📊 Afficher le résumé des rapports générés"
+      debug:
+        msg: |
+          ════════════════════════════════════════════════════════════
+          ✓ Audit complété pour {{ inventory_hostname }}
+          
+          Rapports générés sur les hôtes:
+          - JSON: /tmp/audit_report_{{ inventory_hostname }}.json
+          - HTML: /tmp/audit_report_{{ inventory_hostname }}.html
+          
+          Rapports collectés sur la machine de contrôle:
+          - {{ audit_reports_local_dir }}/{{ inventory_hostname }}/
+          
+          ════════════════════════════════════════════════════════════
+      tags:
+        - audit
+        - report
+        - summary
+
+    - name: " Lister les rapports générés (machine de contrôle)"
+      ansible.builtin.find:
+        path: "{{ audit_reports_local_dir }}/{{ inventory_hostname }}"
+        file_type: file
+      delegate_to: localhost
+      register: generated_reports
+      tags:
+        - audit
+        - report
+        - summary
+
+    - name: " Afficher les fichiers de rapport"
+      debug:
+        msg: |
+          Fichiers de rapport disponibles:
+          {% for report in generated_reports.files %}
+          - {{ report.path }} ({{ report.size }} bytes)
+          {% endfor %}
+      delegate_to: localhost
+      tags:
+        - audit
+        - report
+        - summary
+
+  handlers:
+    - name: Restart auditd
+      ansible.builtin.service:
+        name: auditd
+        state: restarted
+      when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+      listen: "Restart auditd"

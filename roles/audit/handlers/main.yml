@@ -1,0 +1,8 @@
+---
+# Handlers pour le rôle "audit"
+
+- name: Restart auditd
+  service:
+    name: auditd
+    state: restarted
+  when: ansible_service_mgr is defined and ansible_service_mgr != 'none'

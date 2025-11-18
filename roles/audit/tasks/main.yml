@@ -1,0 +1,315 @@
+---
+# Rôle Audit - Vérification de conformité CIS et génération de rapports
+# Compatible avec Docker et serveurs physiques
+
+# ============================================================================
+# 1. Préparation de l'environnement
+# ============================================================================
+- name: Update apt cache (Debian/Ubuntu)
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  when: ansible_pkg_mgr == 'apt'
+  changed_when: false
+  tags:
+    - audit
+    - cis
+  retries: 3
+  delay: 10
+
+- name: Ensure audit tools are installed
+  ansible.builtin.package:
+    name:
+      - auditd
+      - audispd-plugins
+      - jq
+    state: present
+  tags:
+    - audit
+    - cis
+  retries: 3
+  delay: 10
+
+- name: Ensure audit rules directory exists
+  ansible.builtin.file:
+    path: /etc/audit/rules.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  tags:
+    - audit
+    - cis
+
+# ============================================================================
+# 2. Déploiement des règles d'audit CIS (inline, pas de fichier externe)
+# ============================================================================
+- name: Deploy CIS audit rules - System calls
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/cis.rules
+    content: |
+      # Règles d'audit CIS pour Debian/Ubuntu
+      # Supprime les règles précédentes
+      -D
+      
+      # Filtre par défaut
+      -b 8192
+      -f 1
+      
+      # 4.1.1.1 Enregistrer les appels système
+      -a always,exit -F arch=b64 -S adjtimex -S settimeofday -k time-change
+      -a always,exit -F arch=b32 -S adjtimex -S settimeofday -S stime -k time-change
+      -a always,exit -F arch=b64 -S clock_settime -k time-change
+      -a always,exit -F arch=b32 -S clock_settime -k time-change
+      -w /etc/localtime -p wa -k time-change
+      
+      # 4.1.1.2 Auditer les modifications d'utilisateurs/groupes
+      -w /etc/group -p wa -k identity
+      -w /etc/passwd -p wa -k identity
+      -w /etc/gshadow -p wa -k identity
+      -w /etc/shadow -p wa -k identity
+      -w /etc/security/opasswd -p wa -k identity
+      
+      # 4.1.1.3 Auditer les modifications de permissions de fichiers
+      -a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=-1 -k perm_mod
+      -a always,exit -F arch=b32 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=-1 -k perm_mod
+      -a always,exit -F arch=b64 -S chown -S fchown -S fchownat -S lchown -F auid>=1000 -F auid!=-1 -k perm_mod
+      -a always,exit -F arch=b32 -S chown -S fchown -S fchownat -S lchown -F auid>=1000 -F auid!=-1 -k perm_mod
+      
+      # 4.1.1.4 Auditer l'utilisation de sudo
+      -w /etc/sudoers -p wa -k scope
+      -w /etc/sudoers.d/ -p wa -k scope
+      
+      # 4.1.1.5 Auditer les modifications du système
+      -w /sbin/insmod -p x -k modules
+      -w /sbin/rmmod -p x -k modules
+      -w /sbin/modprobe -p x -k modules
+      -a always,exit -F arch=b64 -S init_module -S delete_module -k modules
+      
+      # Make configuration immutable
+      -e 2
+    owner: root
+    group: root
+    mode: '0640'
+    backup: yes
+  notify: Restart auditd
+  tags:
+    - audit
+    - cis
+
+- name: Enable auditd service (non-Docker only)
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: yes
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - audit
+    - cis
+  ignore_errors: yes
+
+# ============================================================================
+# 3. Vérifications de conformité CIS - Modules noyau interdits
+# ============================================================================
+- name: Check for forbidden kernel modules
+  ansible.builtin.shell: |
+    set -o pipefail
+    for module in cramfs freevxfs hfs hfsplus jffs2 usb-storage firewire-core; do
+      if modinfo $module &>/dev/null; then
+        if lsmod | grep -q "^${module}"; then
+          echo "FAIL: $module est chargé"
+        else
+          echo "OK: $module n'est pas chargé"
+        fi
+      fi
+    done
+  register: kernel_modules_check
+  changed_when: false
+  failed_when: false
+  check_mode: no
+  tags:
+    - audit
+    - cis
+    - compliance
+
+- name: Report forbidden kernel modules status
+  ansible.builtin.debug:
+    msg: "{{ kernel_modules_check.stdout_lines }}"
+  tags:
+    - audit
+    - cis
+    - compliance
+
+# ============================================================================
+# 4. Vérifications de conformité CIS - SSH
+# ============================================================================
+- name: Check SSH configuration (PermitRootLogin)
+  ansible.builtin.shell: |
+    grep -i "^PermitRootLogin" /etc/ssh/sshd_config | awk '{print $2}'
+  register: ssh_root_login
+  changed_when: false
+  failed_when: false
+  check_mode: no
+  tags:
+    - audit
+    - cis
+    - compliance
+
+- name: Check SSH configuration (PasswordAuthentication)
+  ansible.builtin.shell: |
+    grep -i "^PasswordAuthentication" /etc/ssh/sshd_config | awk '{print $2}'
+  register: ssh_password_auth
+  changed_when: false
+  failed_when: false
+  check_mode: no
+  tags:
+    - audit
+    - cis
+    - compliance
+
+- name: Report SSH configuration
+  ansible.builtin.debug:
+    msg: |
+      SSH Configuration Check:
+      - PermitRootLogin: {{ ssh_root_login.stdout | default('NOT FOUND', true) }}
+      - PasswordAuthentication: {{ ssh_password_auth.stdout | default('NOT FOUND', true) }}
+  tags:
+    - audit
+    - cis
+    - compliance
+
+# ============================================================================
+# 5. Vérifications de conformité CIS - Permissions fichiers système
+# ============================================================================
+- name: Check system file permissions
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: file_perms
+  loop:
+    - /etc/passwd
+    - /etc/shadow
+    - /etc/group
+    - /etc/gshadow
+    - /etc/ssh/sshd_config
+  tags:
+    - audit
+    - cis
+    - compliance
+
+- name: Report file permissions
+  ansible.builtin.debug:
+    msg: |
+      Vérification des permissions fichiers système:
+      {% for item in file_perms.results %}
+      - {{ item.item }}: mode={{ item.stat.mode }}, owner={{ item.stat.pw_name }}:{{ item.stat.gr_name }}
+      {% endfor %}
+  tags:
+    - audit
+    - cis
+    - compliance
+
+# ============================================================================
+# 6. Vérifications de conformité CIS - Firewall
+# ============================================================================
+- name: Check UFW status
+  ansible.builtin.shell: |
+    ufw status | head -1
+  register: ufw_status
+  changed_when: false
+  failed_when: false
+  check_mode: no
+  tags:
+    - audit
+    - cis
+    - compliance
+
+- name: Report Firewall status
+  ansible.builtin.debug:
+    msg: "Firewall UFW Status: {{ ufw_status.stdout }}"
+  tags:
+    - audit
+    - cis
+    - compliance
+
+# ============================================================================
+# 7. Génération du rapport JSON d'audit
+# ============================================================================
+- name: Create audit report directory
+  ansible.builtin.file:
+    path: "{{ audit_reports_local_dir | default(playbook_dir + '/reports') }}/{{ inventory_hostname }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  tags:
+    - audit
+    - report
+
+- name: Generate audit compliance JSON report
+  ansible.builtin.template:
+    src: audit_compliance_report.j2
+    dest: /tmp/audit_report_{{ inventory_hostname }}.json
+    owner: root
+    group: root
+    mode: '0640'
+  tags:
+    - audit
+    - report
+
+- name: Fetch audit compliance JSON report to control node
+  ansible.builtin.fetch:
+    src: "/tmp/audit_report_{{ inventory_hostname }}.json"
+    dest: "{{ audit_reports_local_dir | default(playbook_dir + '/reports') }}/{{ inventory_hostname }}/audit_report.json"
+    flat: yes
+  tags:
+    - audit
+    - report
+  ignore_errors: yes
+
+# ============================================================================
+# 8. Génération du rapport HTML d'audit
+# ============================================================================
+- name: Generate audit compliance HTML report
+  ansible.builtin.template:
+    src: audit_compliance_report.html.j2
+    dest: /tmp/audit_report_{{ inventory_hostname }}.html
+    owner: root
+    group: root
+    mode: '0640'
+  tags:
+    - audit
+    - report
+
+- name: Fetch audit compliance HTML report to control node
+  ansible.builtin.fetch:
+    src: "/tmp/audit_report_{{ inventory_hostname }}.html"
+    dest: "{{ audit_reports_local_dir | default(playbook_dir + '/reports') }}/{{ inventory_hostname }}/audit_report.html"
+    flat: yes
+  tags:
+    - audit
+    - report
+  ignore_errors: yes
+
+# ============================================================================
+# 9. Résumé de l'audit
+# ============================================================================
+- name: Display audit summary
+  ansible.builtin.debug:
+    msg: |
+      ════════════════════════════════════════════════════════════
+      📊 AUDIT SUMMARY - {{ inventory_hostname }}
+      ════════════════════════════════════════════════════════════
+      
+      ✓ Audit rules deployed
+      ✓ Kernel modules check completed
+      ✓ SSH configuration verified
+      ✓ File permissions checked
+      ✓ Firewall status verified
+      ✓ JSON report generated: /tmp/audit_report_{{ inventory_hostname }}.json
+      ✓ HTML report generated: /tmp/audit_report_{{ inventory_hostname }}.html
+      ✓ Reports fetched to: {{ audit_reports_local_dir | default(playbook_dir + '/reports') }}/{{ inventory_hostname }}/
+      
+      ════════════════════════════════════════════════════════════
+  tags:
+    - audit
+    - report
+    - summary

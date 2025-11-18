@@ -1,0 +1,10 @@
+---
+tmp_mount_opts: "nodev,nosuid,noexec"
+forbidden_fs_modules:
+  - cramfs
+  - freevxfs
+  - jffs2
+  - hfs
+  - hfsplus
+  - udf
+

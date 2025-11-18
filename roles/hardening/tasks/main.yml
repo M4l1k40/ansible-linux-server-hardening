@@ -1,0 +1,721 @@
+---
+# Rôle Hardening - Consolidé et optimisé pour Docker
+# Ce fichier contient toutes les tâches de durcissement système (CIS Hardening)
+# Testé et compatible avec les environnements Docker et serveurs physiques
+
+# ============================================================================
+# 1.1.1.x | Désactiver les modules de systèmes de fichiers inutiles (CIS 1.1.1)
+# ============================================================================
+- name: 1.1.1.x | Désactiver les modules de systèmes de fichiers inutiles
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/cis.conf
+    content: |
+      install cramfs /bin/true
+      install freevxfs /bin/true
+      install hfs /bin/true
+      install hfsplus /bin/true
+      install jffs2 /bin/true
+      install usb-storage /bin/true
+      install firewire-core /bin/true
+    mode: '0644'
+    backup: yes
+  tags:
+    - hardening
+    - kernel_modules
+
+# ============================================================================
+# 1.1.2 | Configuration des partitions et options de montage (CIS 1.1.2)
+# ============================================================================
+- name: 1.1.2 | Vérifier /tmp monté en tmpfs (serveurs physiques/VMs)
+  ansible.posix.mount:
+    path: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,nodev,nosuid,noexec
+    state: mounted
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - partitions
+  ignore_errors: yes
+
+- name: 1.1.2 | Vérifier /dev/shm (serveurs physiques/VMs)
+  ansible.posix.mount:
+    path: /dev/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,nodev,nosuid,noexec
+    state: mounted
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - partitions
+  ignore_errors: yes
+
+- name: 1.1.2 | Vérifier /var/tmp (serveurs physiques/VMs)
+  ansible.posix.mount:
+    path: /var/tmp
+    src: /var/tmp
+    fstype: ext4
+    opts: defaults,nodev,nosuid,noexec
+    state: mounted
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - partitions
+  ignore_errors: yes
+
+# Pour Docker : créer simplement les dossiers avec permissions restrictives
+- name: 1.1.2 | Créer /tmp, /dev/shm et /var/tmp pour Docker
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '1777'
+  loop:
+    - /tmp
+    - /dev/shm
+    - /var/tmp
+  when: ansible_facts.get('ansible_virtualization_type', '') == 'docker'
+  tags:
+    - hardening
+    - partitions
+
+# ============================================================================
+# 1.2 | Mettre à jour les paquets et dépôts (CIS 1.2)
+# ============================================================================
+- name: 1.2 | Mettre à jour les paquets et dépôts
+  ansible.builtin.apt:
+    update_cache: yes
+    upgrade: dist
+    cache_valid_time: 3600
+  tags:
+    - hardening
+    - packages
+  retries: 3
+  delay: 10
+
+# ============================================================================
+# 1.3 | Installer et activer AppArmor (CIS 1.3)
+# ============================================================================
+- name: 1.3 | Installer AppArmor et utilitaires
+  ansible.builtin.apt:
+    name:
+      - apparmor
+      - apparmor-utils
+    state: present
+  tags:
+    - hardening
+    - apparmor
+  retries: 3
+  delay: 10
+
+- name: 1.3 | Activer AppArmor au démarrage (non-Docker)
+  ansible.builtin.service:
+    name: apparmor
+    enabled: yes
+    state: started
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - apparmor
+  ignore_errors: yes
+
+# Vérifier simplement la présence d'AppArmor en Docker
+- name: 1.3 | Vérifier AppArmor en Docker (check only)
+  ansible.builtin.command:
+    cmd: which aa-status
+  register: apparmor_check
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.get('ansible_virtualization_type', '') == 'docker'
+  tags:
+    - hardening
+    - apparmor
+
+# ============================================================================
+# 1.4 | Restreindre l'accès au bootloader (CIS 1.4 - non-Docker)
+# ============================================================================
+- name: 1.4 | Restreindre l'accès au bootloader GRUB
+  ansible.builtin.file:
+    path: /boot/grub/grub.cfg
+    owner: root
+    group: root
+    mode: '0400'
+  when: 
+    - ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+    - ansible_facts.get('os_family', '') == 'Debian'
+  tags:
+    - hardening
+    - bootloader
+  ignore_errors: yes
+
+# ============================================================================
+# 1.5 | Configurer les paramètres de sécurité du noyau (CIS 1.5)
+# ============================================================================
+- name: 1.5 | Configurer les paramètres de sécurité du noyau
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+    sysctl_set: yes
+  loop:
+    - { name: kernel.randomize_va_space, value: 2 }
+    - { name: kernel.suid_dumpable, value: 0 }
+    - { name: kernel.yama.ptrace_scope, value: 1 }
+    - { name: kernel.panic, value: 60 }
+    - { name: kernel.panic_on_oops, value: 1 }
+  tags:
+    - hardening
+    - kernel
+  ignore_errors: yes
+
+# ============================================================================
+# 1.6 | Configurer les messages de bannière système (CIS 1.6)
+# ============================================================================
+- name: 1.6 | Configurer les messages de bannière (/etc/motd)
+  ansible.builtin.copy:
+    dest: "{{ item.dest }}"
+    content: "{{ item.msg }}"
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  loop:
+    - { dest: /etc/motd, msg: "Accès autorisé uniquement aux utilisateurs habilités.\n" }
+    - { dest: /etc/issue, msg: "Connexion restreinte - usage interne.\n" }
+    - { dest: /etc/issue.net, msg: "Connexion SSH restreinte - accès surveillé.\n" }
+  tags:
+    - hardening
+    - banners
+
+# ============================================================================
+# 2.1 | Désactiver les services inutiles (CIS 2.1)
+# ============================================================================
+- name: 2.1 | Arrêter et désactiver isc-dhcp-server
+  ansible.builtin.service:
+    name: isc-dhcp-server
+    state: stopped
+    enabled: no
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - services
+  ignore_errors: yes
+
+- name: 2.1 | Arrêter et désactiver isc-dhcp-server6
+  ansible.builtin.service:
+    name: isc-dhcp-server6
+    state: stopped
+    enabled: no
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - services
+  ignore_errors: yes
+
+# ============================================================================
+# 2.2 | Sécuriser le service SSH (CIS 2.2)
+# ============================================================================
+- name: 2.2 | Installer OpenSSH Server
+  ansible.builtin.apt:
+    name: openssh-server
+    state: present
+  tags:
+    - hardening
+    - ssh
+
+- name: 2.2 | Configurer SSH - Désactiver l'authentification par mot de passe root
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: 'PermitRootLogin no'
+    backup: yes
+    validate: 'sshd -t -f %s'
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - ssh
+  notify: Restart SSH
+
+- name: 2.2 | Configurer SSH - Désactiver l'authentification par mot de passe
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: 'PasswordAuthentication no'
+    backup: yes
+    validate: 'sshd -t -f %s'
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - ssh
+  notify: Restart SSH
+
+- name: 2.2 | Configurer SSH - Désactiver l'authentification vide
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitEmptyPasswords'
+    line: 'PermitEmptyPasswords no'
+    backup: yes
+    validate: 'sshd -t -f %s'
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - ssh
+  notify: Restart SSH
+
+# ============================================================================
+# 3.1 | Configuration du système de fichiers proc (CIS 3.1)
+# ============================================================================
+- name: 3.1 | Restreindre l'accès à /proc/sys/kernel/modules
+  ansible.builtin.file:
+    path: /proc/sys/kernel/modules
+    owner: root
+    group: root
+    mode: '0600'
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - filesystem
+  ignore_errors: yes
+
+# ============================================================================
+# 4.1 | Configuration de journalisation (CIS 4.1)
+# ============================================================================
+- name: 4.1 | Installer rsyslog
+  ansible.builtin.apt:
+    name: rsyslog
+    state: present
+  tags:
+    - hardening
+    - logging
+
+- name: 4.1 | Activer rsyslog au démarrage
+  ansible.builtin.service:
+    name: rsyslog
+    enabled: yes
+    state: started
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - logging
+  ignore_errors: yes
+
+# ============================================================================
+# 5.1 | Configuration des permissions de fichiers système (CIS 5.1)
+# ============================================================================
+- name: 5.1 | Corriger les permissions de /etc/ssh/sshd_config
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: '0600'
+  tags:
+    - hardening
+    - permissions
+
+- name: 5.1 | Corriger les permissions de /etc/passwd
+  ansible.builtin.file:
+    path: /etc/passwd
+    owner: root
+    group: root
+    mode: '0644'
+  tags:
+    - hardening
+    - permissions
+
+- name: 5.1 | Corriger les permissions de /etc/shadow
+  ansible.builtin.file:
+    path: /etc/shadow
+    owner: root
+    group: shadow
+    mode: '0640'
+  tags:
+    - hardening
+    - permissions
+
+- name: 5.1 | Corriger les permissions de /etc/group
+  ansible.builtin.file:
+    path: /etc/group
+    owner: root
+    group: root
+    mode: '0644'
+  tags:
+    - hardening
+    - permissions
+
+- name: 5.1 | Corriger les permissions de /etc/gshadow
+  ansible.builtin.file:
+    path: /etc/gshadow
+    owner: root
+    group: shadow
+    mode: '0640'
+  tags:
+    - hardening
+    - permissions
+
+# ============================================================================
+# 5.2 | Configuration des limites de session (CIS 5.2)
+# ============================================================================
+- name: 5.2 | Configurer les limites de session utilisateur
+  ansible.builtin.blockinfile:
+    path: /etc/security/limits.conf
+    block: |
+      * soft core 0
+      * hard core 0
+      * soft nproc 1024
+      * hard nproc 65535
+      * soft memlock unlimited
+      * hard memlock unlimited
+    marker: "# {mark} CIS 5.2 - Limites de session"
+    backup: yes
+  tags:
+    - hardening
+    - limits
+
+# ============================================================================
+# 6.1 | Configuration du compte root (CIS 6.1)
+# ============================================================================
+- name: 6.1 | Verrouiller le compte root
+  ansible.builtin.user:
+    name: root
+    shell: /usr/sbin/nologin
+    password_lock: yes
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - accounts
+  ignore_errors: yes
+
+# ============================================================================
+# 6.2 | Configuration des utilisateurs (CIS 6.2)
+# ============================================================================
+- name: 6.2 | Trouver et supprimer les comptes système non-interactifs avec shell interactif
+  ansible.builtin.shell: |
+    awk -F: '($1!="root" && $1!="sync" && $1!="shutdown" && $1!="halt" && $3<1000 && $7!="/usr/sbin/nologin" && $7!="/bin/false") {print $1}' /etc/passwd
+  register: system_users_with_shell
+  changed_when: false
+  check_mode: no
+  tags:
+    - hardening
+    - accounts
+
+- name: 6.2 | Désactiver les shells interactifs des comptes système
+  ansible.builtin.user:
+    name: "{{ item }}"
+    shell: /usr/sbin/nologin
+  loop: "{{ system_users_with_shell.stdout_lines }}"
+  when: system_users_with_shell.stdout_lines | length > 0
+  tags:
+    - hardening
+    - accounts
+  ignore_errors: yes
+
+# ============================================================================
+# 7.1 | Configuration du Firewall UFW (CIS 7.1 - Debian/Ubuntu)
+# ============================================================================
+- name: 7.1 | Installer UFW (Uncomplicated Firewall)
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+  tags:
+    - hardening
+    - firewall
+
+- name: 7.1 | Activer UFW au démarrage
+  ansible.builtin.service:
+    name: ufw
+    enabled: yes
+    state: started
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - firewall
+  ignore_errors: yes
+
+- name: 7.1 | Configurer UFW - Règles par défaut (deny incoming, allow outgoing)
+  ansible.builtin.shell: |
+    ufw --force enable
+    ufw default deny incoming
+    ufw default allow outgoing
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - firewall
+  ignore_errors: yes
+  changed_when: false
+
+- name: 7.1 | Autoriser SSH via UFW (port 22)
+  community.general.ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - firewall
+  ignore_errors: yes
+
+# ============================================================================
+# 7.2 | Configuration iptables (rules de base pour Docker/serveurs)
+# ============================================================================
+- name: 7.2 | Installer iptables-persistent
+  ansible.builtin.apt:
+    name: iptables-persistent
+    state: present
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - firewall
+  ignore_errors: yes
+
+- name: 7.2 | Configurer iptables - Rejeter les connexions invalides
+  ansible.builtin.iptables:
+    chain: INPUT
+    ctstate: INVALID
+    jump: DROP
+    comment: Drop invalid packets
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - firewall
+  ignore_errors: yes
+
+- name: 7.2 | Configurer iptables - Autoriser loopback
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: lo
+    jump: ACCEPT
+    comment: Accept localhost
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - firewall
+  ignore_errors: yes
+
+- name: 7.2 | Configurer iptables - Rejeter les packets non-authentifiés vers loopback
+  ansible.builtin.iptables:
+    chain: INPUT
+    destination: 127.0.0.1
+    jump: REJECT
+    comment: Reject unauthorized loopback
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - firewall
+  ignore_errors: yes
+
+# ============================================================================
+# 8.1 | Configuration de Sudo (CIS 8.1)
+# ============================================================================
+- name: 8.1 | Installer sudo
+  ansible.builtin.apt:
+    name: sudo
+    state: present
+  tags:
+    - hardening
+    - sudo
+
+- name: 8.1 | Configurer sudoers - Requérir authentification
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers
+    regexp: '^Defaults\s+authenticate'
+    line: 'Defaults authenticate'
+    validate: 'visudo -cf %s'
+    backup: yes
+  tags:
+    - hardening
+    - sudo
+
+- name: 8.1 | Configurer sudoers - Journaliser les commandes sudo
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers
+    regexp: '^Defaults\s+log_'
+    line: 'Defaults log_input, log_output'
+    validate: 'visudo -cf %s'
+    backup: yes
+  tags:
+    - hardening
+    - sudo
+
+- name: 8.1 | Configurer sudoers - Utiliser pty pour sudo
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers
+    regexp: '^Defaults\s+use_pty'
+    line: 'Defaults use_pty'
+    validate: 'visudo -cf %s'
+    backup: yes
+  tags:
+    - hardening
+    - sudo
+
+- name: 8.1 | Configurer sudoers - Désactiver "use_all_groups"
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers
+    regexp: '^Defaults\s+!use_all_groups'
+    line: 'Defaults !use_all_groups'
+    validate: 'visudo -cf %s'
+    backup: yes
+  tags:
+    - hardening
+    - sudo
+
+- name: 8.1 | Configurer sudoers - Redirection d'E/S restrictive
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers
+    regexp: '^Defaults\s+!.*_edit'
+    line: 'Defaults !sudoedit_follow, !sudoedit_checkdir'
+    validate: 'visudo -cf %s'
+    backup: yes
+  tags:
+    - hardening
+    - sudo
+
+# ============================================================================
+# 8.2 | Audit et journalisation avancée (CIS 8.2)
+# ============================================================================
+- name: 8.2 | Installer auditd
+  ansible.builtin.apt:
+    name: auditd
+    state: present
+  tags:
+    - hardening
+    - audit
+
+- name: 8.2 | Activer auditd au démarrage
+  ansible.builtin.service:
+    name: auditd
+    enabled: yes
+    state: started
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - audit
+  ignore_errors: yes
+
+- name: 8.2 | Configurer audit pour sudo
+  ansible.builtin.lineinfile:
+    path: /etc/audit/rules.d/sudo.rules
+    line: '-w /etc/sudoers -p wa -k scope'
+    create: yes
+    mode: '0640'
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - audit
+  notify: Restart auditd
+
+- name: 8.2 | Configurer audit pour authentification
+  ansible.builtin.copy:
+    dest: /etc/audit/rules.d/auth.rules
+    content: |
+      # Règles d'audit pour l'authentification
+      -w /etc/group -p wa -k identity
+      -w /etc/passwd -p wa -k identity
+      -w /etc/gshadow -p wa -k identity
+      -w /etc/shadow -p wa -k identity
+      -w /etc/security/opasswd -p wa -k identity
+    mode: '0640'
+    backup: yes
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - audit
+  notify: Restart auditd
+
+# ============================================================================
+# 9.1 | Aide (File Integrity Monitoring) - Optionnel pour légèreté
+# ============================================================================
+- name: 9.1 | Installer AIDE (Advanced Intrusion Detection Environment)
+  ansible.builtin.apt:
+    name: aide
+    state: present
+  tags:
+    - hardening
+    - aide
+  ignore_errors: yes
+
+- name: 9.1 | Initialiser la base AIDE (peut prendre du temps)
+  ansible.builtin.shell: |
+    aideinit
+  args:
+    creates: /var/lib/aide/aide.db.gz
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - aide
+  async: 600
+  poll: 0
+  ignore_errors: yes
+
+# ============================================================================
+# 10.1 | Configuration de la synchronisation horaire (CIS 10.1)
+# ============================================================================
+- name: 10.1 | Installer chrony (NTP client)
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+  tags:
+    - hardening
+    - time
+
+- name: 10.1 | Activer chrony au démarrage
+  ansible.builtin.service:
+    name: chrony
+    enabled: yes
+    state: started
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  tags:
+    - hardening
+    - time
+  ignore_errors: yes
+
+# ============================================================================
+# 11.1 | Durcissement du système de fichiers (supplémentaire)
+# ============================================================================
+- name: 11.1 | Désactiver USELESS filesystem modules (USB, etc)
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/disable-useless-fs.conf
+    content: |
+      # Désactiver les modules de stockage USB (sauf si nécessaire)
+      install usb-storage /bin/true
+      # Désactiver les modules réseau inutiles
+      install dccp /bin/true
+      install sctp /bin/true
+      install rds /bin/true
+      install tipc /bin/true
+    mode: '0644'
+    backup: yes
+  tags:
+    - hardening
+    - kernel_modules
+
+# ============================================================================
+# Tâche de synthèse
+# ============================================================================
+- name: Résumé du durcissement système appliqué
+  ansible.builtin.debug:
+    msg: |
+      ✓ Modules noyau inutiles désactivés
+      ✓ Partitions et options de montage configurées
+      ✓ Paquets mis à jour
+      ✓ AppArmor installé et activé
+      ✓ Bootloader sécurisé (non-Docker)
+      ✓ Paramètres noyau configurés
+      ✓ Bannières système configurées
+      ✓ Services inutiles arrêtés
+      ✓ SSH durci (pas de root, pas de password)
+      ✓ Permissions fichiers système corrigées
+      ✓ Limites de session configurées
+      ✓ Comptes root et système sécurisés
+      ✓ Firewall UFW et iptables configurés
+      ✓ Sudo durci avec journalisation
+      ✓ Auditd et audit rules configurés
+      ✓ AIDE (FIM) installé et initialisé
+      ✓ Chrony (NTP) synchronisé
+      ✓ Modules filesystem inutiles désactivés
+  tags:
+    - hardening
+    - summary

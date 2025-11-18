@@ -1,0 +1,18 @@
+---
+# Variables pour le rôle "audit"
+
+# Emplacement du rapport JSON généré
+audit_report_json: /tmp/audit_report.json
+
+# Emplacement du rapport HTML final
+audit_report_html: /tmp/audit_report.html
+
+# Liste des modules noyau à vérifier (selon CIS)
+forbidden_kernel_modules:
+  - cramfs
+  - freevxfs
+  - hfs
+  - hfsplus
+  - jffs2
+  - usb-storage
+  - firewire-core

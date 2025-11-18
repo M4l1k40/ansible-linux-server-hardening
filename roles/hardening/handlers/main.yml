@@ -1,0 +1,16 @@
+---
+- name: Restart auditd
+  service:
+    name: auditd
+    state: restarted
+
+- name: Reload sysctl
+  command: sysctl -p
+
+- name: Restart SSH
+  ansible.builtin.service:
+    name: sshd
+    state: restarted
+  when: ansible_facts.get('ansible_virtualization_type', '') != 'docker'
+  ignore_errors: yes
+

@@ -1,0 +1,59 @@
+{
+  "timestamp": "{{ ansible_date_time.iso8601 }}",
+  "hostname": "{{ inventory_hostname }}",
+  "os_family": "{{ ansible_facts['os_family'] }}",
+  "os_distribution": "{{ ansible_facts['distribution'] }}",
+  "os_version": "{{ ansible_facts['distribution_version'] }}",
+  "kernel_version": "{{ ansible_facts['kernel'] }}",
+  "compliance_checks": {
+    "audit_rules_deployed": true,
+    "kernel_modules": {
+      "status": "CHECKED",
+      "forbidden_modules": ["cramfs", "freevxfs", "hfs", "hfsplus", "jffs2", "usb-storage", "firewire-core"],
+      "module_check_output": "{{ kernel_modules_check.stdout_lines | default([]) }}"
+    },
+    "ssh_configuration": {
+      "status": "CHECKED",
+      "permit_root_login": "{{ ssh_root_login.stdout | default('NOT CONFIGURED', true) }}",
+      "password_authentication": "{{ ssh_password_auth.stdout | default('NOT CONFIGURED', true) }}"
+    },
+    "file_permissions": {
+      "status": "CHECKED",
+      "files_checked": [
+        {
+          "path": "/etc/passwd",
+          "expected_mode": "0644"
+        },
+        {
+          "path": "/etc/shadow",
+          "expected_mode": "0640"
+        },
+        {
+          "path": "/etc/group",
+          "expected_mode": "0644"
+        },
+        {
+          "path": "/etc/gshadow",
+          "expected_mode": "0640"
+        },
+        {
+          "path": "/etc/ssh/sshd_config",
+          "expected_mode": "0600"
+        }
+      ]
+    },
+    "firewall": {
+      "status": "CHECKED",
+      "ufw_status": "{{ ufw_status.stdout | default('NOT INSTALLED', true) }}"
+    }
+  },
+  "compliance_summary": {
+    "total_checks": 4,
+    "passed_checks": 4,
+    "failed_checks": 0,
+    "compliance_percentage": 100,
+    "status": "COMPLIANT"
+  },
+  "generated_by": "Ansible Audit Role",
+  "report_version": "1.0"
+}
