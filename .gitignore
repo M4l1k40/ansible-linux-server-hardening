@@ -1,0 +1,23 @@
+# Ignore logs and temporary files
+logs/
+*.retry
+
+# SSH keys and vaults
+*.pem
+*.key
+*.vault_pass
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Ansible cache/state
+.ansible/
+
+# OS files
+.DS_Store
+Thumbs.db
